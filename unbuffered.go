@@ -106,13 +106,39 @@ func (c *Unbuffered) connect(force bool) (net.Conn, error) {
 		c.conn.Close()
 	}
 
-	conn, err := dial(context.Background(), c.network, c.address, c.dialTimeout)
+	ctx := context.Background()
+	conn, err := dial(ctx, c.network, c.address, c.dialTimeout)
 	if err != nil {
 		return nil, err
 	}
 
 	c.conn = conn
+	go c.connectNotify(ctx)
+
 	return conn, nil
+}
+
+func (c *Unbuffered) connectNotify(ctx context.Context) {
+	one := make([]byte, 1)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		if c.conn == nil {
+			return
+		}
+		if _, err := c.conn.Read(one); err == io.EOF {
+			if pdebug.Enabled {
+				pdebug.Printf("connection closed: error %s connected to %s:%s", err.Error(), c.network, c.address)
+			}
+			c.conn.SetDeadline(time.Now().Add(-time.Second))
+			c.conn.Close()
+			c.conn = nil
+			return
+		}
+	}
 }
 
 func (c *Unbuffered) serialize(msg *Message) ([]byte, error) {

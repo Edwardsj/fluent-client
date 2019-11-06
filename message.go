@@ -2,7 +2,7 @@ package fluent
 
 import (
 	"bytes"
-	"encoding/json"
+	json "github.com/json-iterator/go"
 	"strconv"
 	"time"
 

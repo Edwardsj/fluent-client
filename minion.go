@@ -2,6 +2,7 @@ package fluent
 
 import (
 	"context"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -387,6 +388,28 @@ func (m *minion) runWriter(ctx context.Context) {
 			}
 
 			if conn != nil {
+				go func() {
+					one := make([]byte, 1)
+					if pdebug.Enabled {
+						pdebug.Printf("connection monitor start: connected to %s:%s", m.network, m.address)
+					}
+					for {
+						if _, err := conn.Read(one); err == io.EOF {
+							if pdebug.Enabled {
+								pdebug.Printf("connection closed: error %s connected to %s:%s", err.Error(), m.network, m.address)
+							}
+							conn.SetDeadline(time.Now().Add(-time.Second))
+							conn.Close()
+							conn = nil
+							return
+						}
+						select {
+						case <-parentCtx.Done():
+							return
+						default:
+						}
+					}
+				}()
 				break
 			}
 

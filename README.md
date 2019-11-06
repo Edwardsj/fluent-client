@@ -1,10 +1,13 @@
 # fluent-client
 
-A fluentd client
+A fluentd client Fork from https://github.com/lestrrat-go/fluent-client
+
+## update
+add auto reconnect to fluentd
 
 [![Build Status](https://travis-ci.org/lestrrat-go/fluent-client.png?branch=master)](https://travis-ci.org/lestrrat-go/fluent-client)
 
-[![GoDoc](https://godoc.org/github.com/lestrrat-go/fluent-client?status.svg)](https://godoc.org/github.com/lestrrat-go/fluent-client)
+[![GoDoc](https://godoc.org/github.com/Edwardsj/fluent-client?status.svg)](https://godoc.org/github.com/Edwardsj/fluent-client)
 
 # SYNOPSIS
 
@@ -16,7 +19,7 @@ import (
   "log"
   "time"
 
-  fluent "github.com/lestrrat-go/fluent-client"
+  fluent "github.com/Edwardsj/fluent-client"
 )
 
 func Example() {
@@ -182,7 +185,7 @@ BenchmarkLestrratUnbuffered-4   	  100000	     11719 ns/op	     512 B/op	       
 BenchmarkOfficial-4             	  100000	     10443 ns/op	     896 B/op	       9 allocs/op
 BenchmarkOfficialJSON-4         	  100000	     17796 ns/op	    1760 B/op	      25 allocs/op
 PASS
-ok  	github.com/lestrrat-go/fluent-client	10.287s
+ok  	github.com/Edwardsj/fluent-client	10.287s
 ```
 
 ## Versions
@@ -190,13 +193,13 @@ ok  	github.com/lestrrat-go/fluent-client	10.287s
 | Name | Version |
 |---------|---------|
 | fluentd (td-agent) | 0.12.19 |
-| github.com/lestrrat-go/fluent-client | f3fb05a2b7eb40bb426dd8e1ba43e9ff47b412ec |
+| github.com/Edwardsj/fluent-client | f3fb05a2b7eb40bb426dd8e1ba43e9ff47b412ec |
 | github.com/k0kubun/fluent-logger-go | e1cfc57bb12c99d7207d43b942527c9450d14382 |
 | github.com/fluent/fluent-logger-golang | 8bbc2356beaf021b04c9bd5cdc76ea5a7ccb40ec |
 
 ## Analysis 
 
-### github.com/lestrrat-go/fluent-client
+### github.com/Edwardsj/fluent-client
 
 #### Pros
 
@@ -206,7 +209,7 @@ ok  	github.com/lestrrat-go/fluent-client	10.287s
 * Has buffered/unbuffered clients
 
 While `github.com/k0kubun/fluent-logger-go` is fastest, it does not check errors and does not handle some
-synchronization edge cases. `github.com/lestrrat-go/fluent-client` goes into great pains to check these
+synchronization edge cases. `github.com/Edwardsj/fluent-client` goes into great pains to check these
 things, and still manages to come almost as fast as `github.com/k0kubun/fluent-logger-go`, whihch is already
 several times faster than the official library.
 

@@ -14,7 +14,7 @@ const tag = "debug.test"
 const postsPerIter = 1
 
 func BenchmarkK0kubun(b *testing.B) {
-	c := k0kubun.NewLogger(k0kubun.Config{})
+	c := k0kubun.NewLogger(k0kubun.Config{FluentHost: "10.216.16.104", FluentPort: 30791})
 	for i := 0; i < b.N; i++ {
 		for j := 0; j < postsPerIter; j++ {
 			c.Post(tag, map[string]interface{}{"count": j})
@@ -23,7 +23,7 @@ func BenchmarkK0kubun(b *testing.B) {
 }
 
 func BenchmarkLestrrat(b *testing.B) {
-	c, _ := lestrrat.New()
+	c, _ := lestrrat.New(lestrrat.WithAddress("10.216.16.104:30791"))
 	for i := 0; i < b.N; i++ {
 		for j := 0; j < postsPerIter; j++ {
 			if c.Post(tag, map[string]interface{}{"count": j}) != nil {
@@ -35,7 +35,7 @@ func BenchmarkLestrrat(b *testing.B) {
 }
 
 func BenchmarkLestrratJSON(b *testing.B) {
-	c, _ := lestrrat.New(lestrrat.WithJSONMarshaler())
+	c, _ := lestrrat.New(lestrrat.WithJSONMarshaler(), lestrrat.WithAddress("10.216.16.104:30791"))
 	for i := 0; i < b.N; i++ {
 		for j := 0; j < postsPerIter; j++ {
 			if c.Post(tag, map[string]interface{}{"count": j}) != nil {
@@ -47,7 +47,7 @@ func BenchmarkLestrratJSON(b *testing.B) {
 }
 
 func BenchmarkLestrratUnbuffered(b *testing.B) {
-	c, _ := lestrrat.New(lestrrat.WithBuffered(false))
+	c, _ := lestrrat.New(lestrrat.WithBuffered(false), lestrrat.WithAddress("10.216.16.104:30791"))
 	for i := 0; i < b.N; i++ {
 		for j := 0; j < postsPerIter; j++ {
 			if c.Post(tag, map[string]interface{}{"count": j}) != nil {
@@ -59,7 +59,7 @@ func BenchmarkLestrratUnbuffered(b *testing.B) {
 }
 
 func BenchmarkOfficial(b *testing.B) {
-	c, _ := official.New(official.Config{})
+	c, _ := official.New(official.Config{FluentHost: "10.216.16.104", FluentPort: 30791})
 	for i := 0; i < b.N; i++ {
 		for j := 0; j < postsPerIter; j++ {
 			if c.Post(tag, map[string]interface{}{"count": j}) != nil {
@@ -71,7 +71,7 @@ func BenchmarkOfficial(b *testing.B) {
 }
 
 func BenchmarkOfficialJSON(b *testing.B) {
-	c, _ := official.New(official.Config{MarshalAsJSON: true})
+	c, _ := official.New(official.Config{MarshalAsJSON: true, FluentHost: "10.216.16.104", FluentPort: 30791})
 	for i := 0; i < b.N; i++ {
 		for j := 0; j < postsPerIter; j++ {
 			if c.Post(tag, map[string]interface{}{"count": j}) != nil {
@@ -81,4 +81,3 @@ func BenchmarkOfficialJSON(b *testing.B) {
 	}
 	c.Close()
 }
-

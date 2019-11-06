@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	fluent "github.com/lestrrat-go/fluent-client"
+	fluent "github.com/Edwardsj/fluent-client"
 )
 
 func Example() {

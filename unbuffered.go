@@ -2,6 +2,7 @@ package fluent
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
 	"net"
 	"time"
@@ -63,6 +64,8 @@ func NewUnbuffered(options ...Option) (client *Unbuffered, err error) {
 			c.tagPrefix = opt.Value().(string)
 		case optkeyConnectOnStart:
 			connectOnStart = opt.Value().(bool)
+		case optkeyWithTLS:
+			c.tlsConf = TLSConfig{Enable: true, Conf: opt.Value().(tls.Config)}
 		}
 	}
 
@@ -107,7 +110,7 @@ func (c *Unbuffered) connect(force bool) (net.Conn, error) {
 	}
 
 	ctx := context.Background()
-	conn, err := dial(ctx, c.network, c.address, c.dialTimeout)
+	conn, err := dial(ctx, c.network, c.address, c.dialTimeout, c.tlsConf)
 	if err != nil {
 		return nil, err
 	}
@@ -119,6 +122,11 @@ func (c *Unbuffered) connect(force bool) (net.Conn, error) {
 }
 
 func (c *Unbuffered) connectNotify(ctx context.Context) {
+	defer func() {
+		if err := recover(); err != nil {
+			pdebug.Dump(err)
+		}
+	}()
 	one := make([]byte, 1)
 	for {
 		select {

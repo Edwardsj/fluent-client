@@ -25,6 +25,7 @@ const (
 	optkeyTimestamp       = "timestamp"
 	optkeyWriteQueueSize  = "write_queue_size"
 	optkeyWriteThreshold  = "write_threshold"
+	optkeyWithTLS         = "with_tls"
 )
 
 type marshaler interface {
@@ -65,6 +66,7 @@ type Unbuffered struct {
 	subsecond       bool
 	tagPrefix       string
 	writeTimeout    time.Duration
+	tlsConf         TLSConfig
 }
 
 // Option is an interface used for providing options to the

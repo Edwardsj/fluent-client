@@ -2,6 +2,7 @@ package fluent
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
 	"net"
 	"sync"
@@ -69,6 +70,7 @@ type minion struct {
 	tagPrefix       string
 	writeThreshold  int
 	writeTimeout    time.Duration
+	tlsConf         TLSConfig
 }
 
 func newMinion(options ...Option) (*minion, error) {
@@ -86,6 +88,7 @@ func newMinion(options ...Option) (*minion, error) {
 		readerDone:      make(chan struct{}),
 		writeThreshold:  8 * 1028,
 		writeTimeout:    3 * time.Second,
+		tlsConf:         TLSConfig{Enable: false},
 	}
 
 	var writeQueueSize = 64
@@ -118,12 +121,14 @@ func newMinion(options ...Option) (*minion, error) {
 			m.writeThreshold = opt.Value().(int)
 		case optkeyConnectOnStart:
 			connectOnStart = opt.Value().(bool)
+		case optkeyWithTLS:
+			m.tlsConf = TLSConfig{Enable: true, Conf: opt.Value().(tls.Config)}
 		}
 	}
 
 	// if requested, connect to the server
 	if connectOnStart {
-		conn, err := dial(context.Background(), m.network, m.address, m.dialTimeout)
+		conn, err := dial(context.Background(), m.network, m.address, m.dialTimeout, m.tlsConf)
 		if err != nil {
 			return nil, errors.Wrap(err, `failed to connect on start`)
 		}
@@ -227,7 +232,7 @@ func (m *minion) ping(msg *Message) (err error) {
 	if pdebug.Enabled {
 		pdebug.Printf("Connecting to server for ping...")
 	}
-	conn, err := dial(context.Background(), m.network, m.address, m.dialTimeout)
+	conn, err := dial(context.Background(), m.network, m.address, m.dialTimeout, m.tlsConf)
 	if err != nil {
 		return errors.Wrap(err, `failed to connect server for ping`)
 	}
@@ -389,6 +394,11 @@ func (m *minion) runWriter(ctx context.Context) {
 
 			if conn != nil {
 				go func() {
+					defer func() {
+						if err := recover(); err != nil {
+							pdebug.Dump(err)
+						}
+					}()
 					one := make([]byte, 1)
 					if pdebug.Enabled {
 						pdebug.Printf("connection monitor start: connected to %s:%s", m.network, m.address)
@@ -556,7 +566,7 @@ func (m *minion) connect(ctx context.Context) net.Conn {
 	defer backoffCancel()
 
 	for {
-		conn, err := dial(ctx, m.network, m.address, m.dialTimeout)
+		conn, err := dial(ctx, m.network, m.address, m.dialTimeout, m.tlsConf)
 		if err == nil {
 			if pdebug.Enabled {
 				pdebug.Printf("connected to server!")

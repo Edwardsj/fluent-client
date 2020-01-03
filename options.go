@@ -36,6 +36,15 @@ func WithNetwork(s string) Option {
 	}
 }
 
+//WithMethod specifies the sent type, i.e. "forward" or "http"
+// for `fluent.New`
+func WithMethod(method string) Option {
+	return &option{
+		name:  optkeyMethod,
+		value: method,
+	}
+}
+
 // WithAddress specifies the address to connect to for `fluent.New`
 // A unix domain socket path, or a hostname/IP address.
 func WithAddress(s string) Option {
@@ -59,6 +68,15 @@ func WithJSONMarshaler() Option {
 	return &option{
 		name:  optkeyMarshaler,
 		value: marshalFunc(jsonMarshal),
+	}
+}
+
+// WithRawJSONMarshaler raw JSON marshaling to be used when
+// sending messages to fluentd. Used for `fluent.New`
+func WithRawJSONMarshaler() Option {
+	return &option{
+		name:  optkeyMarshaler,
+		value: marshalFunc(rawJsonMarshal),
 	}
 }
 

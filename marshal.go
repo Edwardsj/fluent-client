@@ -17,3 +17,7 @@ func msgpackMarshal(m *Message) ([]byte, error) {
 func jsonMarshal(m *Message) ([]byte, error) {
 	return m.MarshalJSON()
 }
+
+func rawJsonMarshal(m *Message) ([]byte, error) {
+	return m.MarshalRawJSON()
+}

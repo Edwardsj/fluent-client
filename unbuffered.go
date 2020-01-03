@@ -1,10 +1,12 @@
 package fluent
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"io"
 	"net"
+	"net/http"
 	"time"
 
 	pdebug "github.com/lestrrat-go/pdebug"
@@ -36,6 +38,7 @@ func NewUnbuffered(options ...Option) (client *Unbuffered, err error) {
 		maxConnAttempts: 64,
 		marshaler:       marshalFunc(msgpackMarshal),
 		network:         "tcp",
+		method:          "forward",
 		writeTimeout:    3 * time.Second,
 	}
 
@@ -66,6 +69,8 @@ func NewUnbuffered(options ...Option) (client *Unbuffered, err error) {
 			connectOnStart = opt.Value().(bool)
 		case optkeyWithTLS:
 			c.tlsConf = TLSConfig{Enable: true, Conf: opt.Value().(tls.Config)}
+		case optkeyMethod:
+			c.method = opt.Value().(string)
 		}
 	}
 
@@ -73,6 +78,11 @@ func NewUnbuffered(options ...Option) (client *Unbuffered, err error) {
 		if _, err := c.connect(true); err != nil {
 			return nil, errors.Wrap(err, `failed to connect on start`)
 		}
+	}
+
+	//if method is http marshaler must by raw json
+	if c.method == "http" {
+		c.marshaler = marshalFunc(rawJsonMarshal)
 	}
 
 	return c, nil
@@ -143,7 +153,6 @@ func (c *Unbuffered) connectNotify(ctx context.Context) {
 			}
 			c.conn.SetDeadline(time.Now().Add(-time.Second))
 			c.conn.Close()
-			c.conn = nil
 			return
 		}
 	}
@@ -168,6 +177,9 @@ func (c *Unbuffered) Post(tag string, v interface{}, options ...Option) (err err
 	if pdebug.Enabled {
 		g := pdebug.Marker("fluent.Unbuffered.Post").BindError(&err)
 		defer g.End()
+	}
+	if c.method == "http" {
+		return c.HttpPost(tag, v, options...)
 	}
 
 	var t time.Time
@@ -241,4 +253,55 @@ func (c *Unbuffered) Ping(tag string, v interface{}, options ...Option) (err err
 	}
 
 	return c.Post(tag, v, options...)
+}
+
+func (c *Unbuffered) HttpPost(tag string, v interface{}, options ...Option) (err error) {
+	if pdebug.Enabled {
+		g := pdebug.Marker("fluent.Unbuffered.Http").BindError(&err)
+		defer g.End()
+	}
+	var t time.Time
+	for _, opt := range options {
+		switch opt.Name() {
+		case optkeyTimestamp:
+			t = opt.Value().(time.Time)
+		}
+	}
+
+	if t.IsZero() {
+		t = time.Now()
+	}
+
+	msg := makeMessage(tag, v, t, c.subsecond, false)
+	defer releaseMessage(msg)
+
+	serialized, err := c.serialize(msg)
+	if err != nil {
+		return errors.Wrap(err, `failed to serialize payload`)
+	}
+
+	address := bytes.NewBufferString(c.address)
+	_, err = address.WriteString("/")
+	if err != nil {
+		return errors.Wrap(err, `failed to make http address`)
+	}
+	_, err = address.WriteString(msg.Tag)
+	if err != nil {
+		return errors.Wrap(err, `failed to make http address`)
+	}
+
+	if pdebug.Enabled {
+		pdebug.Printf("Posting http message...")
+	}
+
+	client := http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	_, err = client.Post(address.String(), "application/json", bytes.NewReader(serialized))
+	if err != nil {
+		return errors.Wrap(err, `failed to post http request`)
+	}
+
+	return nil
 }

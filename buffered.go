@@ -47,10 +47,18 @@ func NewBuffered(options ...Option) (client *Buffered, err error) {
 	c.minionQueue = m.incoming
 	c.minionCancel = cancel
 	c.pingQueue = m.pingCh
+	c.httpQueue = m.httpCh
+
 	c.subsecond = subsecond
+	c.method = m.method
 
 	go m.runReader(ctx)
-	go m.runWriter(ctx)
+
+	if c.method == "http" {
+		go m.runHTTPWriter(ctx)
+	} else {
+		go m.runWriter(ctx)
+	}
 
 	return &c, nil
 }
@@ -78,6 +86,10 @@ func (c *Buffered) Post(tag string, v interface{}, options ...Option) (err error
 		g := pdebug.Marker("fluent.Buffered.Post").BindError(&err)
 		defer g.End()
 	}
+	if c.method == "http" {
+		return c.HttpPost(tag, v, options...)
+	}
+
 	// Do not allow processing at all if we have closed
 	c.muClosed.RLock()
 	defer c.muClosed.RUnlock()
@@ -177,6 +189,11 @@ func (c *Buffered) Close() error {
 		close(c.pingQueue)
 		c.pingQueue = nil
 	}
+	if c.httpQueue != nil {
+		close(c.httpQueue)
+		c.httpQueue = nil
+	}
+
 	c.muClosed.Unlock()
 
 	c.minionCancel()
@@ -264,4 +281,73 @@ func (c *Buffered) Ping(tag string, record interface{}, options ...Option) (err 
 	case e := <-replyCh:
 		return e
 	}
+}
+
+// Ping synchronously sends a ping message. This ping bypasses the underlying
+// buffer of pending messages, and establishes a connection to the
+// server entirely for this ping message.
+func (c *Buffered) HttpPost(tag string, record interface{}, options ...Option) (err error) {
+	if pdebug.Enabled {
+		g := pdebug.Marker("Buffered.HttpPost").BindError(&err)
+		defer g.End()
+	}
+
+	var ctx = context.Background()
+	var syncAppend bool
+	var subsecond bool
+	var t time.Time
+	for _, opt := range options {
+		switch opt.Name() {
+		case optkeySubSecond:
+			subsecond = opt.Value().(bool)
+		case optkeyTimestamp:
+			t = opt.Value().(time.Time)
+		case optkeyContext:
+			if pdebug.Enabled {
+				pdebug.Printf("client: using user-supplied context")
+			}
+			ctx = opt.Value().(context.Context)
+		case optkeySyncAppend:
+			syncAppend = opt.Value().(bool)
+		}
+	}
+	if t.IsZero() {
+		t = time.Now()
+	}
+
+	msg := makeMessage(tag, record, t, subsecond, syncAppend)
+
+	// Do not allow processing at all if we have closed
+	c.muClosed.RLock()
+	defer c.muClosed.RUnlock()
+	if c.closed {
+		c.muClosed.RUnlock()
+		return errors.New(`client has already been closed`)
+	}
+
+	if pdebug.Enabled {
+		pdebug.Printf("Sending to http queue")
+	}
+	select {
+	case c.httpQueue <- msg:
+	default:
+		if pdebug.Enabled {
+			pdebug.Printf("http queue is full, drop msg")
+			return
+		}
+	}
+
+	if syncAppend {
+		replyCh := msg.replyCh
+		if pdebug.Enabled {
+			pdebug.Printf("Waiting for synchronous http response...")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case e := <-replyCh:
+			return e
+		}
+	}
+	return
 }

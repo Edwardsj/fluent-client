@@ -17,6 +17,9 @@ func makeMessage(tag string, record interface{}, t time.Time, useSubsecond, need
 	msg.Time.Time = t
 	msg.Record = record
 	msg.subsecond = useSubsecond
+	msg.Len = 1
+	msg.End = msg
+	msg.Next = nil
 	if needReply {
 		msg.replyCh = make(chan error, 1)
 	}
@@ -24,6 +27,10 @@ func makeMessage(tag string, record interface{}, t time.Time, useSubsecond, need
 }
 
 func (m *Message) clear() {
+	if m.Next != nil {
+		m.Next.clear()
+		m.Next = nil
+	}
 	if pdebug.Enabled {
 		g := pdebug.Marker("Message.clear")
 		defer g.End()
@@ -33,6 +40,10 @@ func (m *Message) clear() {
 	m.Time = EventTime{}
 	m.Record = nil
 	m.Option = nil
+	m.End = nil
+	m.Len = 1
+	m.combined = false
+	m.retries = 0
 	if m.replyCh != nil {
 		if pdebug.Enabled {
 			pdebug.Printf("Closing reply channel")
@@ -119,6 +130,14 @@ func (m *Message) MarshalJSON() ([]byte, error) {
 	}
 
 	return buf.Bytes(), nil
+}
+
+func (m *Message) UnmarshalRawJSON(buf []byte) error {
+	return json.Unmarshal(buf, m.Record)
+}
+
+func (m *Message) MarshalRawJSON() ([]byte, error) {
+	return json.Marshal(m.Record)
 }
 
 // EncodeMsgpack serializes a Message to msgpack format

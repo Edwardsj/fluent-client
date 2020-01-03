@@ -1,10 +1,13 @@
 package fluent
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"io"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 
@@ -52,46 +55,55 @@ import (
 // start over the write process (without waiting for the wake-up call)
 
 type minion struct {
-	address         string
-	backoffPolicy   backoff.Policy
-	buffer          []byte
-	bufferLimit     int
-	cond            *sync.Cond
-	dialTimeout     time.Duration
-	done            chan struct{}
-	incoming        chan *Message
-	marshaler       marshaler
-	maxConnAttempts uint64
-	muPending       sync.RWMutex
-	network         string
-	pending         []byte
-	pingCh          chan *Message
-	readerDone      chan struct{}
-	tagPrefix       string
-	writeThreshold  int
-	writeTimeout    time.Duration
-	tlsConf         TLSConfig
+	address            string
+	backoffPolicy      backoff.Policy
+	buffer             []byte
+	bufferLimit        int
+	cond               *sync.Cond
+	dialTimeout        time.Duration
+	done               chan struct{}
+	incoming           chan *Message
+	marshaler          marshaler
+	maxConnAttempts    uint64
+	maxHttpPackageSize int
+	httpPackageGzip    bool
+	httpRetries        int
+	muPending          sync.RWMutex
+	network            string
+	method             string
+	pending            []byte
+	pingCh             chan *Message
+	httpCh             chan *Message
+	readerDone         chan struct{}
+	tagPrefix          string
+	writeThreshold     int
+	writeTimeout       time.Duration
+	tlsConf            TLSConfig
 }
 
 func newMinion(options ...Option) (*minion, error) {
 	m := &minion{
-		address:         "127.0.0.1:24224",
-		backoffPolicy:   backoff.NewExponential(),
-		bufferLimit:     8 * 1024 * 1024,
-		cond:            sync.NewCond(&sync.Mutex{}),
-		dialTimeout:     3 * time.Second,
-		done:            make(chan struct{}),
-		maxConnAttempts: 64,
-		marshaler:       marshalFunc(msgpackMarshal),
-		network:         "tcp",
-		pingCh:          make(chan *Message),
-		readerDone:      make(chan struct{}),
-		writeThreshold:  8 * 1028,
-		writeTimeout:    3 * time.Second,
-		tlsConf:         TLSConfig{Enable: false},
+		address:            "127.0.0.1:24224",
+		backoffPolicy:      backoff.NewExponential(),
+		bufferLimit:        8 * 1024 * 1024,
+		cond:               sync.NewCond(&sync.Mutex{}),
+		dialTimeout:        3 * time.Second,
+		done:               make(chan struct{}),
+		maxConnAttempts:    64,
+		marshaler:          marshalFunc(msgpackMarshal),
+		network:            "tcp",
+		method:             "forward",
+		pingCh:             make(chan *Message),
+		readerDone:         make(chan struct{}),
+		writeThreshold:     8 * 1028,
+		writeTimeout:       3 * time.Second,
+		tlsConf:            TLSConfig{Enable: false},
+		maxHttpPackageSize: 10,
+		httpPackageGzip:    false,
+		httpRetries:        5,
 	}
 
-	var writeQueueSize = 64
+	var writeQueueSize = 6
 	var connectOnStart bool
 	for _, opt := range options {
 		switch opt.Name() {
@@ -123,6 +135,14 @@ func newMinion(options ...Option) (*minion, error) {
 			connectOnStart = opt.Value().(bool)
 		case optkeyWithTLS:
 			m.tlsConf = TLSConfig{Enable: true, Conf: opt.Value().(tls.Config)}
+		case optkeyMethod:
+			m.method = opt.Value().(string)
+		case optkeyMaxHttpPackageSize:
+			m.maxHttpPackageSize = opt.Value().(int)
+		case optkeyHttpPackageGzip:
+			m.httpPackageGzip = opt.Value().(bool)
+		case optkeyHttpRetries:
+			m.httpRetries = opt.Value().(int)
 		}
 	}
 
@@ -135,14 +155,23 @@ func newMinion(options ...Option) (*minion, error) {
 		defer conn.Close()
 	}
 
-	m.buffer = make([]byte, 0, m.bufferLimit)
-	m.pending = m.buffer
-	if pdebug.Enabled {
-		pdebug.Printf("m.pending cap %d", cap(m.pending))
-		pdebug.Printf("m.pending len %d", len(m.pending))
+	//if method is http marshaler must by raw json
+	if m.method == "http" {
+		m.marshaler = marshalFunc(rawJsonMarshal)
+		//TODO we need use go-disruptor instead
+		m.httpCh = make(chan *Message, m.bufferLimit)
+		if pdebug.Enabled {
+			pdebug.Printf("m.httpCh cap %d", cap(m.httpCh))
+		}
+	} else {
+		m.buffer = make([]byte, 0, m.bufferLimit)
+		m.pending = m.buffer
+		if pdebug.Enabled {
+			pdebug.Printf("m.pending cap %d", cap(m.pending))
+			pdebug.Printf("m.pending len %d", len(m.pending))
+		}
+		m.incoming = make(chan *Message, writeQueueSize)
 	}
-
-	m.incoming = make(chan *Message, writeQueueSize)
 
 	return m, nil
 }
@@ -254,6 +283,131 @@ func (m *minion) ping(msg *Message) (err error) {
 			return errors.Wrap(err, `failed to write ping message to connection`)
 		}
 		buf = buf[n:]
+	}
+
+	// releaseMessage automatically closes msg.replyCh
+	return nil
+}
+
+// all messages in one http post have the same tag.
+// if got error in the post action, we will sent the message back to http chan.
+func (m *minion) http_post(msg *Message) (err error) {
+	if pdebug.Enabled {
+		g := pdebug.Marker("minion.http_post").BindError(&err)
+		defer g.End()
+	}
+	defer func() {
+		if err == nil {
+			releaseMessage(msg)
+			return
+		}
+
+		if msg.retries > m.httpRetries {
+			if pdebug.Enabled {
+				pdebug.Printf("message (%v) retry too many times , drop it.", msg.Record)
+			}
+			releaseMessage(msg)
+			return
+		}
+
+		if pdebug.Enabled {
+			pdebug.Printf("Sending back the error message (%v)", msg.Record)
+		}
+
+		msg.retries++
+		select {
+		case m.httpCh <- msg:
+		default:
+			releaseMessage(msg)
+			if pdebug.Enabled {
+				pdebug.Printf("http queue is full, drop msg")
+			}
+			return
+		}
+	}()
+
+	defer func() {
+		if err == nil {
+			return
+		}
+
+		if pdebug.Enabled {
+			pdebug.Printf("Replying back with an error message (%s)", err)
+		}
+		// make sure we won't block by replyCh
+		if msg.replyCh != nil {
+			select {
+			case msg.replyCh <- err:
+			default:
+				return
+			}
+		}
+
+		if pdebug.Enabled {
+			pdebug.Printf("End Reply back with an error message (%s)", err)
+		}
+	}()
+
+	//combine msgs
+	m.combineMsg(msg)
+
+	if pdebug.Enabled {
+		pdebug.Printf("Serializing http message...")
+	}
+	buf, err := m.serialize(msg)
+	if err != nil {
+		return errors.Wrap(err, `failed to serialize http message`)
+	}
+
+	if pdebug.Enabled {
+		pdebug.Printf("Writing http message...")
+	}
+
+	address := bytes.NewBufferString(m.address)
+	_, err = address.WriteString("/")
+	if err != nil {
+		return errors.Wrap(err, `failed to make http address`)
+	}
+	_, err = address.WriteString(msg.Tag)
+	if err != nil {
+		return errors.Wrap(err, `failed to make http address`)
+	}
+
+	if pdebug.Enabled {
+		pdebug.Printf("Posting http message...")
+	}
+
+	client := http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	if m.httpPackageGzip {
+		gzipBuf := new(bytes.Buffer)
+		gzipWriter := gzip.NewWriter(gzipBuf)
+		_, err := gzipWriter.Write(buf)
+		if err != nil {
+			return errors.Wrap(err, `failed to gzip post http body`)
+		}
+		gzipWriter.Flush()
+		gzipWriter.Close()
+
+		req, err := http.NewRequest("POST", address.String(), gzipBuf)
+		if err != nil {
+			return errors.Wrap(err, `failed to new http gzip request`)
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Encoding", "gzip")
+
+		_, err = client.Do(req)
+		if err != nil {
+			return errors.Wrap(err, `failed to post http gzip request`)
+		}
+	} else {
+		_, err = client.Post(address.String(), "application/json", bytes.NewReader(buf))
+		if err != nil {
+			return errors.Wrap(err, `failed to post http request`)
+		}
 	}
 
 	// releaseMessage automatically closes msg.replyCh
@@ -410,11 +564,10 @@ func (m *minion) runWriter(ctx context.Context) {
 							}
 							conn.SetDeadline(time.Now().Add(-time.Second))
 							conn.Close()
-							conn = nil
 							return
 						}
 						select {
-						case <-parentCtx.Done():
+						case <-ctx.Done():
 							return
 						default:
 						}
@@ -526,6 +679,10 @@ func (m *minion) writePending(conn net.Conn) (int, error) {
 		pdebug.Printf("background writer: attempting to write %d bytes", len(m.pending))
 	}
 
+	if conn == nil {
+		return 0, errors.New(`conn is nil failed to write data to conn`)
+	}
+
 	n, err := conn.Write(m.pending)
 	if err != nil {
 		if pdebug.Enabled {
@@ -582,6 +739,95 @@ func (m *minion) connect(ctx context.Context) net.Conn {
 			return nil
 		case <-b.Next():
 		}
+
+		if pdebug.Enabled {
+			pdebug.Printf("connected to server!")
+		}
+		return conn
 	}
 	return nil
+}
+
+func (m *minion) runHTTPWriter(ctx context.Context) {
+	if pdebug.Enabled {
+		defer pdebug.Printf("background http writer: exiting")
+	}
+
+	for {
+		msg := <-m.httpCh
+		if msg.Len >= m.maxHttpPackageSize {
+			m.http_post(msg)
+			continue
+		}
+
+		//we should make sure all messages in same bundle have the same tag
+		msgBundles := make(map[string]*Message)
+		msgBundles[msg.Tag] = msg
+
+		//try to flush all the msg in httpCH
+		for len(m.httpCh) > 0 {
+			if pdebug.Enabled {
+				pdebug.Printf("background reader: flushing incoming httpCh (%d left)", len(m.httpCh))
+			}
+
+			select {
+			case nextMsg := <-m.httpCh:
+				tag := nextMsg.Tag
+				if _, ok := msgBundles[tag]; !ok {
+					msgBundles[tag] = nextMsg
+				} else {
+					if (msgBundles[tag].Len + nextMsg.Len) >= m.maxHttpPackageSize {
+						m.http_post(nextMsg)
+						continue
+					}
+
+					//head msg'len is sum of all the line msgs
+					msgBundles[tag].Len += nextMsg.Len
+					msgBundles[tag].End.Next = nextMsg
+					msgBundles[tag].End = nextMsg.End
+				}
+			default:
+			}
+		}
+
+		for _, s := range msgBundles {
+			m.http_post(s)
+		}
+	}
+}
+
+func (m *minion) combineMsg(msg *Message) {
+	if msg.Next == nil {
+		return
+	}
+
+	var records []interface{}
+
+	if _, ok := (msg.Record).([]interface{}); msg.combined && ok {
+		records = (msg.Record).([]interface{})
+	} else {
+		records = make([]interface{}, 0)
+		records = append(records, msg.Record)
+	}
+
+	nextMsg := msg.Next
+	for nextMsg != nil {
+		if _, ok := (nextMsg.Record).([]interface{}); nextMsg.combined && ok {
+			records = append(records, (nextMsg.Record).([]interface{})...)
+		} else {
+			records = append(records, nextMsg.Record)
+		}
+		nextMsg = nextMsg.Next
+	}
+
+	msg.Record = records
+	msg.combined = true
+	releaseMessage(msg.Next)
+	msg.Next = nil
+	msg.Len = len(records)
+
+	if pdebug.Enabled {
+		pdebug.Printf("Combining http messages...  len is %d", len(records))
+	}
+	return
 }

@@ -8,24 +8,28 @@ import (
 )
 
 const (
-	optkeyAddress         = "address"
-	optkeyBuffered        = "buffered"
-	optkeyBufferLimit     = "buffer_limit"
-	optkeyContext         = "context"
-	optkeyConnectOnStart  = "connect_on_start"
-	optkeyDialTimeout     = "dial_timeout"
-	optkeyMarshaler       = "marshaler"
-	optkeyMaxConnAttempts = "max_conn_attempts"
-	optkeyNetwork         = "network"
-	optkeyPingInterval    = "ping_interval"
-	optkeyPingResultChan  = "ping_result_chan"
-	optkeySubSecond       = "subsecond"
-	optkeySyncAppend      = "sync_append"
-	optkeyTagPrefix       = "tag_prefix"
-	optkeyTimestamp       = "timestamp"
-	optkeyWriteQueueSize  = "write_queue_size"
-	optkeyWriteThreshold  = "write_threshold"
-	optkeyWithTLS         = "with_tls"
+	optkeyAddress            = "address"
+	optkeyBuffered           = "buffered"
+	optkeyBufferLimit        = "buffer_limit"
+	optkeyMethod             = "method"
+	optkeyContext            = "context"
+	optkeyConnectOnStart     = "connect_on_start"
+	optkeyDialTimeout        = "dial_timeout"
+	optkeyMarshaler          = "marshaler"
+	optkeyMaxConnAttempts    = "max_conn_attempts"
+	optkeyNetwork            = "network"
+	optkeyPingInterval       = "ping_interval"
+	optkeyPingResultChan     = "ping_result_chan"
+	optkeySubSecond          = "subsecond"
+	optkeySyncAppend         = "sync_append"
+	optkeyTagPrefix          = "tag_prefix"
+	optkeyTimestamp          = "timestamp"
+	optkeyWriteQueueSize     = "write_queue_size"
+	optkeyWriteThreshold     = "write_threshold"
+	optkeyWithTLS            = "with_tls"
+	optkeyMaxHttpPackageSize = "max_http_package_size"
+	optkeyHttpPackageGzip    = "http_package_gzip"
+	optkeyHttpRetries        = "http_retries"
 )
 
 type marshaler interface {
@@ -51,7 +55,9 @@ type Buffered struct {
 	minionQueue  chan *Message
 	muClosed     sync.RWMutex
 	pingQueue    chan *Message
+	httpQueue    chan *Message
 	subsecond    bool
+	method       string
 }
 
 // Unbuffered is a Client that synchronously sends messages.
@@ -63,6 +69,7 @@ type Unbuffered struct {
 	maxConnAttempts uint64
 	mu              sync.RWMutex
 	network         string
+	method          string
 	subsecond       bool
 	tagPrefix       string
 	writeTimeout    time.Duration
@@ -85,6 +92,11 @@ type Message struct {
 	Option    interface{} `msgpack:"option"`
 	subsecond bool        // true if we should include subsecond resolution time
 	replyCh   chan error  // non-nil if caller expects notification for successfully appending to buffer
+	Next      *Message    //for Message chain
+	End       *Message    //end of Message chain
+	Len       int         //for Message chain
+	retries   int         // count retries
+	combined  bool
 }
 
 // EventTime is used to represent the time in a msgpack Message

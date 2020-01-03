@@ -16,6 +16,7 @@ func dial(ctx context.Context, network, address string, timeout time.Duration, t
 
 	var dialer net.Dialer
 	dialer.Timeout = timeout
+	dialer.KeepAlive = time.Second * 30
 
 	if tlsConfig.Enable {
 		conn, err = tls.DialWithDialer(&dialer, network, address, &tlsConfig.Conf)

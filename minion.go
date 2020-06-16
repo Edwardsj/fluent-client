@@ -399,14 +399,21 @@ func (m *minion) http_post(msg *Message) (err error) {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Content-Encoding", "gzip")
 
-		_, err = client.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			return errors.Wrap(err, `failed to post http gzip request`)
 		}
+		if resp.StatusCode != 200 {
+			return errors.New("return code is not 200")
+		}
+
 	} else {
-		_, err = client.Post(address.String(), "application/json", bytes.NewReader(buf))
+		resp, err := client.Post(address.String(), "application/json", bytes.NewReader(buf))
 		if err != nil {
 			return errors.Wrap(err, `failed to post http request`)
+		}
+		if resp.StatusCode != 200 {
+			return errors.New("return code is not 200")
 		}
 	}
 
